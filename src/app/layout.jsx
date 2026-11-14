@@ -1,0 +1,1 @@
+import './globals.css';export const metadata={title:'Nexus AI — Private Intelligence',description:'Seu espaço privado de inteligência artificial.'};export default function RootLayout({children}){return <html lang="pt-BR"><body>{children}</body></html>}

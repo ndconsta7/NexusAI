@@ -1,0 +1,7 @@
+'use client';
+import {useEffect,useRef,useState} from 'react';
+export default function Home(){const[authorized,setAuthorized]=useState(false),[checking,setChecking]=useState(true),[password,setPassword]=useState(''),[busy,setBusy]=useState(false),[uploading,setUploading]=useState(false),[prompt,setPrompt]=useState(''),[messages,setMessages]=useState([]),[model,setModel]=useState('gemini-3.8-flash'),[error,setError]=useState(''),[files,setFiles]=useState([]);const endRef=useRef(null),picker=useRef(null);
+useEffect(()=>{fetch('/api/session').then(r=>r.json()).then(d=>setAuthorized(!!d.authorized)).catch(()=>setAuthorized(false)).finally(()=>setChecking(false))},[]);useEffect(()=>{endRef.current?.scrollIntoView({behavior:'smooth'})},[messages,busy]);
+async function login(e){e.preventDefault();setBusy(true);setError('');try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})}),d=await r.json();if(!r.ok)throw Error(d.error||'NÃ£o foi possÃ­vel entrar');setAuthorized(true);setPassword('')}catch(e){setError(e.message)}finally{setBusy(false)}}
+async function logout(){await fetch('/api/logout',{method:'POST'});setAuthorized(false);setMessages([]);setFiles([]);setError('')}
+async function addFiles(list){const selected=Array.from(list||[]);if(!selected.length)return;if(files.length+selected.length>5){setError('Envie no mÃ¡ximo 5 arquivos por mensagem.');return}setUploading(true);setError('');for(const file of select¶»§q«^
