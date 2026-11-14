@@ -41,7 +41,7 @@ export async function POST(req) {
       for (let attempt = 0; attempt < 3; attempt++) {
         response = await fetch(endpoint(modelId), {
           method:'POST',headers:{'Content-Type':'application/json'},body:requestBody,
-          signal:AbortSignal.timeout(18000)
+          signal:AbortSignal.timeout(8000)
         });
         data = await response.json().catch(() => ({}));
         if (response.ok || (response.status !== 503 && response.status !== 429)) break;
