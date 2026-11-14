@@ -23,7 +23,7 @@ async function generate(modelId, key, requestBody) {
     const response = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/' +
         encodeURIComponent(modelId) +
-        ':generateContent?key=' + encodeURIComponent(key),
+        ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(key),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -32,8 +32,11 @@ async function generate(modelId, key, requestBody) {
         cache: 'no-store'
       }
     );
-    const data = await response.json().catch(() => ({}));
-    return { response, data };
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    }
+    return { response, data: null };
   } catch (error) {
     return { response: null, data: {}, timedOut: error?.name === 'AbortError' || error?.name === 'TimeoutError' };
   } finally {
@@ -92,18 +95,14 @@ export async function POST(req) {
       const result = await generate(modelId, key, requestBody);
 
       if (result.response?.ok) {
-        const answer = (result.data.candidates?.[0]?.content?.parts || [])
-          .filter(part => !part.thought && part.text)
-          .map(part => part.text)
-          .join('\n')
-          .trim();
-        if (!answer) {
-          return NextResponse.json({ error: 'O modelo ' + modelId + ' não retornou texto. Tente novamente.' }, { status: 502 });
-        }
-        return NextResponse.json({
-          text: answer,
-          model: modelId,
-          fallback: modelId !== selected
+        return new NextResponse(result.response.body, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Nexus-Model': modelId,
+            'X-Nexus-Fallback': modelId !== selected ? 'true' : 'false'
+          }
         });
       }
 
