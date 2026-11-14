@@ -16,11 +16,9 @@ function valid(token) {
 
 const SYSTEM = 'Você é a Nexus AI, uma assistente avançada, prestativa e tecnicamente competente. Responda em português brasileiro por padrão. Você é especialista em programação, arquitetura de software, análise de arquivos, imagens, vídeos, documentos, pesquisa e resolução de problemas. Quando o usuário pedir para criar ou alterar um site, produza uma solução completa e funcional em HTML, CSS e JavaScript, preferencialmente em um único bloco de código identificado como html para que a interface possa exibir uma prévia executável. Não substitua código por explicações vagas. Inclua responsividade, acessibilidade e boas práticas. Quando receber arquivos, imagens, áudio, vídeo ou documentos, analise o conteúdo enviado. Nunca diga que abriu ou analisou um arquivo se ele não estiver anexado. Não invente testes, resultados, acessos, commits ou ações externas.';
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-async function generate(modelId, key, requestBody, timeoutMs = 18000) {
+async function generate(modelId, key, requestBody) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), 14000);
   try {
     const response = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/' +
@@ -35,12 +33,9 @@ async function generate(modelId, key, requestBody, timeoutMs = 18000) {
       }
     );
     const data = await response.json().catch(() => ({}));
-    return { response, data, timedOut: false };
+    return { response, data };
   } catch (error) {
-    if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
-      return { response: null, data: {}, timedOut: true };
-    }
-    throw error;
+    return { response: null, data: {}, timedOut: error?.name === 'AbortError' || error?.name === 'TimeoutError' };
   } finally {
     clearTimeout(timer);
   }
@@ -66,9 +61,9 @@ export async function POST(req) {
 
     const allowed = ['gemini-3.8-flash', 'gemini-4-carbon'];
     const selected = allowed.includes(model) ? model : 'gemini-3.8-flash';
-    const contents = history.slice(-12).map(item => ({
+    const contents = history.slice(-10).map(item => ({
       role: item.role === 'model' ? 'model' : 'user',
-      parts: [{ text: String(item.text || '').slice(0, 16000) }]
+      parts: [{ text: String(item.text || '').slice(0, 12000) }]
     }));
     const parts = [{ text: message }];
     for (const file of files) {
@@ -85,61 +80,75 @@ export async function POST(req) {
     const requestBody = JSON.stringify({
       systemInstruction: { parts: [{ text: SYSTEM }] },
       contents,
-      generationConfig: { temperature: 0.65, maxOutputTokens: 4096 }
+      generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
     });
 
-    // Uma tentativa curta de recuperação para sobrecarga; em timeout, troca de modelo.
-    let usedModel = selected;
-    let result = await generate(usedModel, key, requestBody, 18000);
-    const retryable = result.timedOut || result.response?.status === 503 || result.response?.status === 429;
+    // Não usar 3.7 como fallback: esse modelo pode ser roteado para 3.8.
+    // Testar modelos realmente distintos, sem repetir erros de quota.
+    const candidates = [...new Set([
+      selected,
+      ...(selected !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite'
+    ])];
 
-    if (result.response && retryable) {
-      await sleep(350);
-      result = await generate(usedModel, key, requestBody, 14000);
-    }
+    let lastFailure = null;
+    for (const modelId of candidates) {
+      const result = await generate(modelId, key, requestBody);
 
-    if (result.timedOut || result.response?.status === 503 || result.response?.status === 429) {
-      usedModel = selected === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
-      result = await generate(usedModel, key, requestBody, 18000);
-    }
+      if (result.response?.ok) {
+        const answer = (result.data.candidates?.[0]?.content?.parts || [])
+          .filter(part => !part.thought && part.text)
+          .map(part => part.text)
+          .join('\n')
+          .trim();
+        if (!answer) {
+          return NextResponse.json({ error: 'O modelo ' + modelId + ' não retornou texto. Tente novamente.' }, { status: 502 });
+        }
+        return NextResponse.json({
+          text: answer,
+          model: modelId,
+          fallback: modelId !== selected
+        });
+      }
 
-    if (result.timedOut || !result.response) {
+      if (!result.response) {
+        lastFailure = {
+          model: modelId,
+          status: result.timedOut ? 504 : 502,
+          message: result.timedOut ? 'O modelo excedeu o tempo limite.' : 'Falha de conexão com o Google.'
+        };
+        continue;
+      }
+
+      const status = result.response.status;
+      const googleMessage = result.data?.error?.message || 'O Google não informou detalhes.';
+      lastFailure = { model: modelId, status, message: googleMessage };
+
+      // Só avança para outro modelo em indisponibilidade ou limite/quota.
+      if (status === 429 || status === 503 || status === 504) continue;
+
       return NextResponse.json({
-        error: 'O Gemini demorou para responder mesmo após a troca automática de modelo. Tente enviar novamente; sua conversa continua disponível.'
-      }, { status: 504 });
+        error: 'O Google recusou a solicitação (' + status + '): ' + googleMessage,
+        model: modelId
+      }, { status: status >= 500 ? 502 : status });
     }
 
-    if (!result.response.ok) {
-      const detail = result.data?.error?.message;
-      const overloaded = result.response.status === 503 || result.response.status === 429;
-      return NextResponse.json({
-        error: overloaded
-          ? 'Os modelos de IA estão temporariamente ocupados. A Nexus tentou o modelo alternativo; tente novamente em alguns segundos.'
-          : (detail || 'O serviço Gemini retornou um erro.')
-      }, { status: result.response.status >= 500 ? 502 : result.response.status });
-    }
-
-    const text = (result.data.candidates?.[0]?.content?.parts || [])
-      .filter(part => !part.thought && part.text)
-      .map(part => part.text)
-      .join('\n')
-      .trim();
-
-    if (!text) {
-      const reason = result.data.candidates?.[0]?.finishReason;
-      return NextResponse.json({
-        error: reason === 'MAX_TOKENS'
-          ? 'A resposta ficou muito extensa. Peça para a Nexus continuar.'
-          : 'A IA não retornou texto. Tente novamente.'
-      }, { status: 502 });
-    }
-
-    return NextResponse.json({ text, model: usedModel, fallback: usedModel !== selected });
+    const quota = lastFailure?.status === 429;
+    const timedOut = lastFailure?.status === 504;
+    const details = String(lastFailure?.message || '').slice(0, 500);
+    return NextResponse.json({
+      error: quota
+        ? 'A cota da API Gemini foi atingida nos modelos disponíveis. Detalhe do Google: ' + details
+        : timedOut
+          ? 'Os modelos disponíveis excederam o tempo limite. Último detalhe: ' + details
+          : 'Os modelos Gemini estão indisponíveis no momento. Último detalhe do Google: ' + details
+    }, { status: quota ? 429 : 503 });
   } catch (error) {
     return NextResponse.json({
       error: error?.name === 'SyntaxError'
         ? 'Não foi possível interpretar a mensagem enviada.'
-        : 'Falha de conexão ao conversar com a Nexus. Tente novamente.'
+        : 'Falha interna ao conversar com a Nexus. Tente novamente.'
     }, { status: 500 });
   }
 }
