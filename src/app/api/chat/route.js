@@ -18,7 +18,7 @@ const SYSTEM = 'Você é a Nexus AI, uma assistente avançada, prestativa e tecn
 
 async function generate(modelId, key, requestBody) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 14000);
+  const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/' +
@@ -61,9 +61,9 @@ export async function POST(req) {
 
     const allowed = ['gemini-3.8-flash', 'gemini-4-carbon'];
     const selected = allowed.includes(model) ? model : 'gemini-3.8-flash';
-    const contents = history.slice(-10).map(item => ({
+    const contents = history.slice(-6).map(item => ({
       role: item.role === 'model' ? 'model' : 'user',
-      parts: [{ text: String(item.text || '').slice(0, 12000) }]
+      parts: [{ text: String(item.text || '').slice(0, 6000) }]
     }));
     const parts = [{ text: message }];
     for (const file of files) {
@@ -80,17 +80,12 @@ export async function POST(req) {
     const requestBody = JSON.stringify({
       systemInstruction: { parts: [{ text: SYSTEM }] },
       contents,
-      generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
+      generationConfig: { temperature: 0.65, maxOutputTokens: 3072 }
     });
 
-    // Não usar 3.7 como fallback: esse modelo pode ser roteado para 3.8.
-    // Testar modelos realmente distintos, sem repetir erros de quota.
-    const candidates = [...new Set([
-      selected,
-      ...(selected !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-      'gemini-3.6-flash',
-      'gemini-3.5-flash-lite'
-    ])];
+    // Prioriza latência: no máximo um fallback independente após o modelo escolhido.
+    // Evita uma cadeia longa de tentativas que deixa o usuário esperando.
+    const candidates = [...new Set([selected, 'gemini-3.6-flash'])];
 
     let lastFailure = null;
     for (const modelId of candidates) {
