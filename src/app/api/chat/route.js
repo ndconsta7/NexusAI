@@ -33,16 +33,38 @@ export async function POST(req) {
       parts.push({fileData:{mimeType:file.mimeType,fileUri:file.uri}});
     }
     contents.push({role:'user',parts});
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+selected+':generateContent?key='+encodeURIComponent(key), {
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({systemInstruction:{parts:[{text:SYSTEM}]},contents,generationConfig:{temperature:0.7,maxOutputTokens:8192}}),
-      signal:AbortSignal.timeout(55000)
-    });
-    const data = await response.json();
-    if (!response.ok) return NextResponse.json({error:data?.error?.message||'O serviço Gemini retornou um erro.'},{status:response.status>=500?502:response.status});
+    const endpoint = modelId => 'https://generativelanguage.googleapis.com/v1beta/models/'+modelId+':generateContent?key='+encodeURIComponent(key);
+    const requestBody = JSON.stringify({systemInstruction:{parts:[{text:SYSTEM}]},contents,generationConfig:{temperature:0.7,maxOutputTokens:8192}});
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    async function callModel(modelId) {
+      let response, data;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        response = await fetch(endpoint(modelId), {
+          method:'POST',headers:{'Content-Type':'application/json'},body:requestBody,
+          signal:AbortSignal.timeout(18000)
+        });
+        data = await response.json().catch(() => ({}));
+        if (response.ok || (response.status !== 503 && response.status !== 429)) break;
+        if (attempt < 2) await wait(900 * (2 ** attempt));
+      }
+      return {response,data};
+    }
+    let usedModel = selected;
+    let result = await callModel(usedModel);
+    if (result.response.status === 503 && selected === 'gemini-3.8-flash') {
+      usedModel = 'gemini-3.7-flash';
+      result = await callModel(usedModel);
+    }
+    const {response,data} = result;
+    if (!response.ok) {
+      const overloaded = response.status === 503;
+      return NextResponse.json({error:overloaded
+        ? 'Os modelos Gemini estão temporariamente sobrecarregados. A Nexus tentou novamente e também tentou o modelo alternativo gratuito. Aguarde um pouco e tente novamente.'
+        : (data?.error?.message||'O serviço Gemini retornou um erro.')},{status:response.status>=500?502:response.status});
+    }
     const text = (data.candidates?.[0]?.content?.parts||[]).filter(p=>!p.thought&&p.text).map(p=>p.text).join('\n').trim();
     if (!text) return NextResponse.json({error:'A IA não retornou texto. Tente novamente.'},{status:502});
-    return NextResponse.json({text,model:selected});
+    return NextResponse.json({text,model:usedModel,fallback:usedModel!==selected});
   } catch (error) {
     return NextResponse.json({error:error?.name==='TimeoutError'?'A resposta demorou demais. Tente novamente.':'Falha ao conversar com a Nexus. Tente novamente.'},{status:500});
   }
